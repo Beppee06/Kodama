@@ -1,0 +1,56 @@
+# Definisce quando eseguire questa pipeline
+when:
+  event: [push, tag] # Esegui su push e tag
+
+steps:
+  build_and_push_harbor:
+    image: gcr.io/kaniko-project/executor:v1.14.0-debug
+    secrets: [ harbor_url, harbor_project, harbor_user, harbor_password ] # Assicurati che questi segreti siano definiti in Woodpecker
+    commands:
+      - |
+        # 1. Verifica che le variabili siano impostate (opzionale ma utile per debug)
+        echo "HARBOR_URL: $HARBOR_URL"
+        echo "HARBOR_PROJECT: $$HARBOR_PROJECT"
+        # Non stampare la password nei log!
+        echo "HARBOR_USER: $HARBOR_USER"
+        echo "Tagging with: $CI_COMMIT_BRANCH:-$CI_COMMIT_TAG:-$CI_COMMIT_SHA:0:8"
+
+        # 2. Crea il file di configurazione Docker per Kaniko
+        #    Assicurati che ${HARBOR_URL} sia il nome host corretto del tuo registry (es. myharbor.example.com)
+        #    NON includere 'https://' o percorsi extra qui, solo il nome host (e porta se non standard).
+        #    Se HARBOR_URL include https://, devi rimuoverlo per la chiave in auths.
+        #    Esempio: se HARBOR_URL è "https://myregistry.com", la chiave deve essere "myregistry.com"
+        #    Un modo robusto è usare un comando per estrarre solo l'hostname:
+        HARBOR_HOSTNAME=$(echo "${HARBOR_URL}" | sed -e 's|^[^/]*//||' -e 's|/.*$||')
+        echo "Using HARBOR_HOSTNAME for auths key: ${HARBOR_HOSTNAME}"
+        echo "{\"auths\":{\"${HARBOR_HOSTNAME}\":{\"username\":\"${HARBOR_USER}\",\"password\":\"${HARBOR_PASSWORD}\"}}}" > /kaniko/.docker/config.json
+
+        # Verifica il contenuto del file config (utile per debug, ma attento a non esporre password in log pubblici)
+        echo "Generated /kaniko/.docker/config.json:"
+        cat /kaniko/.docker/config.json # Rimuovi questo in produzione se i log sono pubblici
+
+        # 3. Costruisci e fai il push dell'immagine
+        echo "Building and pushing image..."
+        #    Assicurati che la destinazione usi ${HARBOR_URL} e ${HARBOR_PROJECT} correttamente
+        DESTINATION="$HARBOR_URL/$HARBOR_PROJECT/kodama-api:$CI_COMMIT_SHA"
+        echo "Pushing to: $DESTINATION"
+
+        /kaniko/executor \
+          --context=dir://. \
+          --dockerfile=Dockerfile \
+          --destination=$DESTINATION \
+          --build-arg=BUILDKIT_INLINE_CACHE=1 \
+          --cache=true
+    environment:
+      HARBOR_URL:
+        from_secret: harbor_url
+      HARBOR_PROJECT:
+        from_secret: harbor_project
+      HARBOR_USER:
+        from_secret: harbor_user
+      HARBOR_PASSWORD:
+        from_secret: harbor_password
+
+    when:
+      branch: [main, master, Setup-Enviroment]
+      event: [push, tag]
